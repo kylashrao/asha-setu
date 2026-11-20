@@ -1,0 +1,19 @@
+# dependencies
+node_modules/
+/.pnp
+.pnp.*
+
+# next.js / static export / vercel
+.next/
+out/
+.vercel
+
+# testing & typescript
+coverage/
+*.tsbuildinfo
+next-env.d.ts
+
+# env & os
+.env*
+.DS_Store
+*.log

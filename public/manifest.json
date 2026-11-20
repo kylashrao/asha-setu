@@ -1,0 +1,15 @@
+{
+  "id": "/",
+  "name": "ASHA-Setu Maternal Care",
+  "short_name": "ASHA-Setu",
+  "description": "Offline maternal triage and visit records.",
+  "lang": "en-IN",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f1f5f2",
+  "theme_color": "#103b33",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
