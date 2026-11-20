@@ -74,7 +74,7 @@ h1, h2, h3, p { margin: 0; }
 .speech-head { display: flex; align-items: center; gap: .95rem; margin-bottom: 1rem; }
 .speech-head h2 { font-size: 1.28rem; font-weight: 800; letter-spacing: -.025em; }
 .speech-head p { font-size: .94rem; color: #3b584b; margin-top: .12rem; }
-.mic { display: grid; place-items: center; flex: 0 0 66px; height: 66px; border-radius: 50%; border: 0; color: #fff; background: var(--green); touch-action: none; user-select: none; -webkit-touch-callout: none; box-shadow: 0 0 0 4px #c8e8d6; }
+.mic { display: grid; place-items: center; flex: 0 0 66px; height: 66px; border-radius: 50%; border: 0; color: #fff; background: var(--green); touch-action: manipulation; user-select: none; box-shadow: 0 0 0 4px #c8e8d6; }
 .mic[aria-pressed="true"] { background: #a62637; box-shadow: 0 0 0 4px #f3b9c1; }
 .speech-footer { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem .85rem; margin-top: .7rem; }
 .speech-footer span { flex: 1 1 14rem; color: #345447; font-size: .875rem; }

@@ -44,7 +44,7 @@ const identityWords: Record<TranscriptLocale, [string, string, string]> = {
 
 interface Recognition {
   lang: string;
-  processLocally?: boolean;
+  onstart: (() => void) | null;
   onresult: ((event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
   onerror: (() => void) | null;
   onend: (() => void) | null;
@@ -102,7 +102,10 @@ export default function Home() {
   const [riskFilter, setRiskFilter] = useState<TriageLevel | "all">("all");
   const [notice, setNotice] = useState("");
   const [speechNotice, setSpeechNotice] = useState("");
-  const [listening, setListening] = useState(false);
+  const [speechPhase, setSpeechPhase] = useState<"idle" | "starting" | "listening" | "processing">("idle");
+  const speechActive = speechPhase !== "idle";
+  const canStopSpeech = speechPhase === "starting" || speechPhase === "listening";
+  const micLabel = canStopSpeech ? "Tap to stop" : "Tap to start";
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const recognition = useRef<Recognition | null>(null);
@@ -176,24 +179,28 @@ export default function Home() {
     setSpeechNotice(found ? "Fields filled. Review and edit them below." : "No fields recognized. Enter the observations below.");
   }
 
-  function manualFallback() {
-    setSpeechNotice("On-device speech is unavailable for this language. Type a transcript or enter the fields below.");
+  function manualFallback(reason: string) {
+    setSpeechNotice(`${reason} Type a transcript or enter the fields below.`);
     transcriptField.current?.focus();
   }
 
   function startSpeech() {
     if (recognition.current) return;
+    if (!navigator.onLine) return manualFallback("Voice entry requires an internet connection.");
     const browser = window as Window & {
       SpeechRecognition?: RecognitionConstructor;
       webkitSpeechRecognition?: RecognitionConstructor;
     };
     const SpeechRecognition = browser.SpeechRecognition ?? browser.webkitSpeechRecognition;
-    if (!SpeechRecognition) return manualFallback();
+    if (!SpeechRecognition) return manualFallback("Voice entry is unavailable in this browser.");
 
     const active = new SpeechRecognition();
-    if (!("processLocally" in active)) return manualFallback();
-    active.processLocally = true;
     active.lang = locale;
+    active.onstart = () => {
+      if (recognition.current === active) {
+        setSpeechPhase((current) => current === "starting" ? "listening" : current);
+      }
+    };
     active.onresult = (event) => {
       if (recognition.current !== active) return;
       const value = Array.from(event.results, (result) => result[0].transcript).join(" ").trim();
@@ -203,37 +210,40 @@ export default function Home() {
       }
     };
     active.onerror = () => {
-      if (recognition.current === active) manualFallback();
+      if (recognition.current !== active) return;
+      recognition.current = null;
+      setSpeechPhase("idle");
+      manualFallback("Speech recognition failed.");
     };
     active.onend = () => {
       if (recognition.current !== active) return;
       recognition.current = null;
-      setListening(false);
-      setSpeechNotice((current) => current === "Listening…" || current === "Processing speech…"
-        ? "No speech captured. Try again or enter the observations below."
-        : current);
+      setSpeechPhase("idle");
+      setSpeechNotice((current) => current || "No speech captured. Try again or enter the observations below.");
     };
     recognition.current = active;
     try {
+      setSpeechPhase("starting");
+      setSpeechNotice("");
       active.start();
-      setListening(true);
-      setSpeechNotice("Listening…");
     } catch {
       recognition.current = null;
-      manualFallback();
+      setSpeechPhase("idle");
+      manualFallback("Could not start speech recognition.");
     }
   }
 
   function stopSpeech() {
     const active = recognition.current;
-    if (!active) return;
+    if (!active || !canStopSpeech) return;
     try {
+      setSpeechPhase("processing");
       active.stop();
-      setSpeechNotice((current) => current === "Listening…" ? "Processing speech…" : current);
     } catch {
       recognition.current = null;
-      setListening(false);
-      manualFallback();
+      active.abort();
+      setSpeechPhase("idle");
+      manualFallback("Could not stop speech recognition.");
     }
   }
 
@@ -241,7 +251,7 @@ export default function Home() {
     const active = recognition.current;
     recognition.current = null;
     active?.abort();
-    setListening(false);
+    setSpeechPhase("idle");
     setSpeechNotice("");
     setNotice("");
     setTab(next);
@@ -352,7 +362,7 @@ export default function Home() {
         <div className="shell masthead-inner">
           <div className="brand"><span className="brand-icon"><HeartPulse size={24} /></span><div><strong>ASHA-Setu</strong><span>Maternal care</span></div></div>
           <div className="toolbar">
-            <label className="language"><Languages size={19} /><select aria-label="Speech language" value={locale} disabled={listening}
+            <label className="language"><Languages size={19} /><select aria-label="Speech language" value={locale} disabled={speechActive}
               onChange={(event) => setLocale(event.target.value as TranscriptLocale)}>
               {Object.entries(languages).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
             </select><ChevronDown size={16} /></label>
@@ -374,28 +384,20 @@ export default function Home() {
               <div className="form-stack">
                 <section className="panel speech-panel">
                   <div className="speech-head">
-                    <button className="mic" type="button" aria-label={listening ? "Stop listening" : "Start microphone"} aria-pressed={listening}
-                      onPointerDown={(event) => {
-                        if (!event.isPrimary || event.button !== 0 || listening) return;
-                        event.currentTarget.setPointerCapture(event.pointerId);
-                        startSpeech();
-                      }}
-                      onPointerUp={() => stopSpeech()} onPointerCancel={() => stopSpeech()}
-                      onClick={(event) => {
-                        if (event.detail !== 0) return;
-                        if (listening) stopSpeech();
-                        else startSpeech();
-                      }}>
-                      {listening ? <Square size={27} /> : <Mic size={30} />}
+                    <button className="mic" type="button" aria-label={micLabel}
+                      aria-pressed={canStopSpeech} disabled={speechPhase === "processing"}
+                      onClick={canStopSpeech ? stopSpeech : startSpeech}>
+                      {canStopSpeech ? <Square size={27} /> : <Mic size={30} />}
                     </button>
-                    <div><h2>{listening ? "Listening" : "Hold to speak"}</h2><p>Say the patient details and readings, or type them below.</p></div>
+                    <div><h2>{micLabel}</h2>
+                      <p>Dictate using your browser’s online speech service, or type below.</p></div>
                   </div>
                   <label className="field"><span>Visit transcript</span>
                     <textarea ref={transcriptField} value={transcript} onChange={(event) => setTranscript(event.target.value)}
                       placeholder="Name Meera, village Rampur, BP 120 over 80, Hb 11" rows={2} />
                   </label>
-                  <div className="speech-footer"><button className="button secondary" type="button" disabled={!transcript.trim() || listening} onClick={() => applyTranscript(transcript)}>Fill from text</button>
-                    <span role="status">{speechNotice}</span></div>
+                  <div className="speech-footer"><button className="button secondary" type="button" disabled={!transcript.trim() || speechActive} onClick={() => applyTranscript(transcript)}>Fill from text</button>
+                    <span role="status">{speechPhase === "starting" ? "Starting microphone…" : speechPhase === "listening" ? "Listening…" : speechPhase === "processing" ? "Processing speech…" : speechNotice}</span></div>
                 </section>
                 <section className="panel">
                   <div className="panel-heading"><SectionTitle icon={<BookUser size={22} />}>Patient details</SectionTitle>
@@ -437,7 +439,7 @@ export default function Home() {
                     <button type="button" className="button secondary" onClick={() => referral("whatsappUrl")}><MessageCircle size={19} /> Alert PHC on WhatsApp</button>
                     <button type="button" className="button secondary" onClick={() => referral("smsUrl")}><MessageCircle size={19} /> Send SMS</button>
                   </div>
-                  <button type="button" className="button primary" onClick={saveVisit} disabled={busy || listening}><Save size={19} /> Save Visit to Device</button>
+                  <button type="button" className="button primary" onClick={saveVisit} disabled={busy || speechActive}><Save size={19} /> Save Visit to Device</button>
                   {notice && <p className="notice" role="status">{notice}</p>}
                 </section>
               </aside>
