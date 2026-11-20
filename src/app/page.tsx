@@ -44,16 +44,24 @@ const identityWords: Record<TranscriptLocale, [string, string, string]> = {
 
 interface Recognition {
   lang: string;
+  interimResults: boolean;
   onstart: (() => void) | null;
-  onresult: ((event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
-  onerror: (() => void) | null;
+  onresult: ((event: { results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal: boolean }> }) => void) | null;
+  onerror: ((event: { error: string }) => void) | null;
   onend: (() => void) | null;
   start(): void;
-  stop(): void;
   abort(): void;
 }
 
 type RecognitionConstructor = new () => Recognition;
+
+function abortRecognition(active: Recognition | null) {
+  try {
+    active?.abort();
+  } catch {
+    // The browser may have already ended the session.
+  }
+}
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return <label className="field"><span>{label}</span>{children}</label>;
@@ -102,13 +110,13 @@ export default function Home() {
   const [riskFilter, setRiskFilter] = useState<TriageLevel | "all">("all");
   const [notice, setNotice] = useState("");
   const [speechNotice, setSpeechNotice] = useState("");
-  const [speechPhase, setSpeechPhase] = useState<"idle" | "starting" | "listening" | "processing">("idle");
+  const [speechPhase, setSpeechPhase] = useState<"idle" | "starting" | "listening">("idle");
   const speechActive = speechPhase !== "idle";
-  const canStopSpeech = speechPhase === "starting" || speechPhase === "listening";
-  const micLabel = canStopSpeech ? "Tap to stop" : "Tap to start";
+  const micLabel = speechActive ? "Tap to stop" : "Tap to start";
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const recognition = useRef<Recognition | null>(null);
+  const speechTimeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const transcriptField = useRef<HTMLTextAreaElement>(null);
   const phcField = useRef<HTMLInputElement>(null);
 
@@ -122,7 +130,8 @@ export default function Home() {
       window.removeEventListener("offline", update);
       const active = recognition.current;
       recognition.current = null;
-      active?.abort();
+      clearTimeout(speechTimeout.current);
+      abortRecognition(active);
     };
   }, []);
 
@@ -194,64 +203,74 @@ export default function Home() {
     const SpeechRecognition = browser.SpeechRecognition ?? browser.webkitSpeechRecognition;
     if (!SpeechRecognition) return manualFallback("Voice entry is unavailable in this browser.");
 
-    const active = new SpeechRecognition();
-    active.lang = locale;
-    active.onstart = () => {
-      if (recognition.current === active) {
-        setSpeechPhase((current) => current === "starting" ? "listening" : current);
-      }
-    };
-    active.onresult = (event) => {
-      if (recognition.current !== active) return;
-      const value = Array.from(event.results, (result) => result[0].transcript).join(" ").trim();
-      if (value) {
-        setTranscript(value);
-        applyTranscript(value);
-      }
-    };
-    active.onerror = () => {
-      if (recognition.current !== active) return;
-      recognition.current = null;
-      setSpeechPhase("idle");
-      manualFallback("Speech recognition failed.");
-    };
-    active.onend = () => {
-      if (recognition.current !== active) return;
-      recognition.current = null;
-      setSpeechPhase("idle");
-      setSpeechNotice((current) => current || "No speech captured. Try again or enter the observations below.");
-    };
-    recognition.current = active;
     try {
+      const active = new SpeechRecognition();
+      recognition.current = active;
+      active.lang = locale;
+      active.interimResults = true;
+
+      let lastFinalTranscript = "";
+      const armTimeout = (delay: number, reason: string) => {
+        clearTimeout(speechTimeout.current);
+        speechTimeout.current = setTimeout(() => {
+          if (recognition.current !== active) return;
+          stopSpeech();
+          manualFallback(reason);
+        }, delay);
+      };
+      const waitForSpeech = () => armTimeout(60_000, "Speech recognition timed out.");
+      active.onstart = () => {
+        if (recognition.current !== active) return;
+        setSpeechPhase("listening");
+        waitForSpeech();
+      };
+      active.onresult = (event) => {
+        if (recognition.current !== active) return;
+        waitForSpeech();
+        const results = Array.from(event.results);
+        const value = results.map((result) => result[0].transcript).join(" ").trim();
+        const finalValue = results.filter((result) => result.isFinal)
+          .map((result) => result[0].transcript).join(" ").trim();
+        setTranscript(value);
+        if (finalValue && finalValue !== lastFinalTranscript) {
+          lastFinalTranscript = finalValue;
+          applyTranscript(finalValue);
+        }
+      };
+      active.onerror = (event) => {
+        if (recognition.current !== active) return;
+        resetSpeech();
+        manualFallback(`Speech recognition error: ${event.error}.`);
+      };
+      active.onend = () => {
+        if (recognition.current !== active) return;
+        resetSpeech();
+        setSpeechNotice((current) => current || "No final speech captured. Try again or enter the observations below.");
+      };
       setSpeechPhase("starting");
       setSpeechNotice("");
+      armTimeout(10_000, "The microphone did not start.");
       active.start();
-    } catch {
-      recognition.current = null;
-      setSpeechPhase("idle");
-      manualFallback("Could not start speech recognition.");
+    } catch (error) {
+      stopSpeech();
+      manualFallback(error instanceof Error ? error.message : "Could not start speech recognition.");
     }
+  }
+
+  function resetSpeech() {
+    clearTimeout(speechTimeout.current);
+    recognition.current = null;
+    setSpeechPhase("idle");
   }
 
   function stopSpeech() {
     const active = recognition.current;
-    if (!active || !canStopSpeech) return;
-    try {
-      setSpeechPhase("processing");
-      active.stop();
-    } catch {
-      recognition.current = null;
-      active.abort();
-      setSpeechPhase("idle");
-      manualFallback("Could not stop speech recognition.");
-    }
+    resetSpeech();
+    abortRecognition(active);
   }
 
   function changeTab(next: typeof tab) {
-    const active = recognition.current;
-    recognition.current = null;
-    active?.abort();
-    setSpeechPhase("idle");
+    stopSpeech();
     setSpeechNotice("");
     setNotice("");
     setTab(next);
@@ -385,9 +404,9 @@ export default function Home() {
                 <section className="panel speech-panel">
                   <div className="speech-head">
                     <button className="mic" type="button" aria-label={micLabel}
-                      aria-pressed={canStopSpeech} disabled={speechPhase === "processing"}
-                      onClick={canStopSpeech ? stopSpeech : startSpeech}>
-                      {canStopSpeech ? <Square size={27} /> : <Mic size={30} />}
+                      aria-pressed={speechActive}
+                      onClick={speechActive ? stopSpeech : startSpeech}>
+                      {speechActive ? <Square size={27} /> : <Mic size={30} />}
                     </button>
                     <div><h2>{micLabel}</h2>
                       <p>Dictate using your browser’s online speech service, or type below.</p></div>
@@ -397,7 +416,7 @@ export default function Home() {
                       placeholder="Name Meera, village Rampur, BP 120 over 80, Hb 11" rows={2} />
                   </label>
                   <div className="speech-footer"><button className="button secondary" type="button" disabled={!transcript.trim() || speechActive} onClick={() => applyTranscript(transcript)}>Fill from text</button>
-                    <span role="status">{speechPhase === "starting" ? "Starting microphone…" : speechPhase === "listening" ? "Listening…" : speechPhase === "processing" ? "Processing speech…" : speechNotice}</span></div>
+                    <span role="status">{speechPhase === "starting" ? "Starting microphone…" : speechPhase === "listening" ? "Listening…" : speechNotice}</span></div>
                 </section>
                 <section className="panel">
                   <div className="panel-heading"><SectionTitle icon={<BookUser size={22} />}>Patient details</SectionTitle>
